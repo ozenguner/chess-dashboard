@@ -214,7 +214,7 @@ fdf = df[mask]
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 T = st.tabs(["Overview", "Rating History", "Openings", "Performance Splits",
-             "Games & Terminations", "Accuracy"])
+             "Games & Terminations", "Stockfish Accuracy"])
 t_ov, t_rt, t_op, t_sp, t_gm, t_ac = T
 
 
@@ -253,6 +253,31 @@ with t_ov:
                  labels={"month":"Month","win_rate":"Win Rate"})
     fig.update_layout(coloraxis_showscale=False, yaxis_tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Games Played per Day")
+    st.caption("Daily game count with 7-day rolling average — shows activity patterns and volume trends.")
+    daily = (
+        fdf.groupby("date", observed=True)
+        .agg(games=("result","count"))
+        .reset_index()
+        .sort_values("date")
+    )
+    daily["roll7"] = daily["games"].rolling(7, min_periods=1).mean()
+    fig_daily = go.Figure()
+    fig_daily.add_trace(go.Bar(
+        x=daily["date"], y=daily["games"],
+        name="Daily games", marker_color="rgba(99,110,250,0.35)",
+    ))
+    fig_daily.add_trace(go.Scatter(
+        x=daily["date"], y=daily["roll7"],
+        mode="lines", name="7-day avg",
+        line=dict(color="#ef553b", width=2),
+    ))
+    fig_daily.update_layout(
+        height=320, xaxis_title="Date", yaxis_title="Games",
+        hovermode="x unified", legend=dict(orientation="h", y=1.1),
+    )
+    st.plotly_chart(fig_daily, use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -512,63 +537,177 @@ with t_gm:
 
 
 # ════════════════════════════════════════════════════════════════
-# TAB 6 — ACCURACY
+# TAB 6 — STOCKFISH ACCURACY
 # ════════════════════════════════════════════════════════════════
 with t_ac:
-    st.header("Accuracy")
-    show_tips(coaching_tips(fdf, "accuracy"))
+    st.header("Stockfish Accuracy")
 
-    st.info(
-        "**Engine accuracy scores are not available.** "
-        "Chess.com only includes `WhiteAccuracy` / `BlackAccuracy` headers in PGNs that have been "
-        "manually computer-analyzed on their website. None of the downloaded games contain these headers.  \n\n"
-        "**To get accuracy data:** open any game on chess.com → click **Analysis** → **Request Analysis**. "
-        "Then re-run `fetch_games.py` (it will skip already-downloaded months) and `parse_games.py` to "
-        "refresh the database once analysis is available.",
-        icon="ℹ️"
+    adf = fdf.dropna(subset=["accuracy_me"]).copy()
+    n_analyzed = len(adf)
+    n_total    = len(fdf)
+
+    st.caption(
+        f"**{n_analyzed:,} / {n_total:,}** games analyzed with Stockfish 17 (depth 16). "
+        f"Run `python analyze_games.py --all` to analyze the full archive."
     )
 
-    st.subheader("Clock-Based Time Management Proxy")
-    st.caption("Derived from `%clk` annotations embedded in every PGN — not engine accuracy, but a useful signal.")
+    if n_analyzed == 0:
+        st.warning(
+            "No Stockfish data in the database yet.  \n"
+            "Run: `python analyze_games.py --stockfish stockfish/stockfish.exe`",
+            icon="⚠️"
+        )
+    else:
+        # ── Coaching tips for accuracy ────────────────────────────────────
+        acc_tips = []
+        avg_acc  = adf["accuracy_me"].mean()
+        avg_acpl = adf["acpl_me"].mean()
+        avg_blun = adf["blunders_me"].mean()
+        acc_tips.append(f"Average accuracy: **{avg_acc:.1f}%** | Average ACPL: **{avg_acpl:.1f}** | Avg blunders/game: **{avg_blun:.2f}**")
+        win_acc  = adf.loc[adf["result"]=="win",  "accuracy_me"].mean()
+        loss_acc = adf.loc[adf["result"]=="loss", "accuracy_me"].mean()
+        if not pd.isna(win_acc) and not pd.isna(loss_acc):
+            acc_tips.append(f"You play at **{win_acc:.1f}%** accuracy in wins vs **{loss_acc:.1f}%** in losses — a {win_acc-loss_acc:.1f}-point gap.")
+        high_acc = adf[adf["accuracy_me"] >= 85]
+        if len(high_acc):
+            acc_tips.append(f"In **{len(high_acc)}** games where your accuracy ≥ 85%: win rate = **{(high_acc['result']=='win').mean():.1%}**.")
+        top_blun = adf.nlargest(1, "blunders_me").iloc[0]
+        acc_tips.append(f"Your worst game had **{int(top_blun['blunders_me'])} blunders** — study that game to understand the pattern.")
+        show_tips(acc_tips)
 
-    # Time-loss analysis by time class
-    tl = (fdf.assign(flagged=(fdf["termination_clean"]=="on time") & (fdf["result"]=="loss"))
-          .groupby("time_class", observed=True)
-          .agg(games=("result","count"), flagged=("flagged","sum"))
-          .assign(flag_rate=lambda d: d["flagged"]/d["games"])
-          .reset_index())
-    c1,c2 = st.columns(2)
-    with c1:
-        fig_tl = px.bar(tl, x="time_class", y="flag_rate", text_auto=".1%",
-                        color="flag_rate", color_continuous_scale="Reds", range_color=[0,0.4],
-                        labels={"time_class":"Time Class","flag_rate":"Time-Loss Rate"},
-                        title="% Games Lost on Time by Time Class")
-        fig_tl.update_layout(coloraxis_showscale=False, yaxis_tickformat=".0%", yaxis_range=[0,0.5])
-        st.plotly_chart(fig_tl, use_container_width=True)
+        # ── Big metrics ───────────────────────────────────────────────────
+        m1,m2,m3,m4,m5 = st.columns(5)
+        m1.metric("Avg Accuracy",  f"{avg_acc:.1f}%")
+        m2.metric("Avg ACPL",      f"{avg_acpl:.1f}")
+        m3.metric("Avg Blunders",  f"{avg_blun:.2f}")
+        m4.metric("Avg Mistakes",  f"{adf['mistakes_me'].mean():.2f}")
+        m5.metric("Avg Inaccuracies", f"{adf['inaccuracies_me'].mean():.2f}")
 
-    with c2:
-        # Termination breakdown for losses only
-        loss_terms = (fdf[fdf["result"]=="loss"]["termination_clean"]
-                      .value_counts().reset_index()
-                      .rename(columns={"termination_clean":"Reason","count":"Losses"}))
-        fig_lt = px.pie(loss_terms, names="Reason", values="Losses",
-                        title="How You Lose (all losses)", hole=0.35)
-        fig_lt.update_traces(textposition="inside", textinfo="percent+label")
-        fig_lt.update_layout(showlegend=False)
-        st.plotly_chart(fig_lt, use_container_width=True)
+        st.divider()
 
-    # Win rate by time control
-    st.subheader("Win Rate by Time Control")
-    tc_wr = (fdf.groupby("time_control", observed=True)
-             .agg(games=("result","count"), wins=("result", lambda x:(x=="win").sum()))
-             .assign(win_rate=lambda d: d["wins"]/d["games"])
-             .reset_index()
-             .sort_values("games", ascending=False)
-             .head(20))
-    tc_wr["time_control"] = tc_wr["time_control"].astype(str)
-    fig_tc = px.scatter(tc_wr, x="time_control", y="win_rate", size="games",
-                        color="win_rate", color_continuous_scale="RdYlGn", range_color=[0.3,0.7],
-                        labels={"time_control":"Time Control","win_rate":"Win Rate","games":"Games"},
-                        title="Win Rate per Time Control (bubble = game count)")
-    fig_tc.update_layout(yaxis_tickformat=".0%", yaxis_range=[0,1], coloraxis_showscale=False)
-    st.plotly_chart(fig_tc, use_container_width=True)
+        # ── Row 1: accuracy distribution + accuracy by result ─────────────
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.subheader("Accuracy Distribution")
+            fig_hist = px.histogram(
+                adf, x="accuracy_me", nbins=40,
+                color="result",
+                color_discrete_map={"win":"#2ecc71","loss":"#e74c3c","draw":"#3498db"},
+                labels={"accuracy_me":"My Accuracy (%)","count":"Games","result":"Result"},
+                barmode="overlay", opacity=0.75,
+            )
+            fig_hist.update_layout(yaxis_title="Games", xaxis_range=[0,100])
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+        with c2:
+            st.subheader("Accuracy by Result")
+            fig_box = px.box(
+                adf, x="result", y="accuracy_me",
+                color="result",
+                color_discrete_map={"win":"#2ecc71","loss":"#e74c3c","draw":"#3498db"},
+                labels={"result":"Result","accuracy_me":"My Accuracy (%)"},
+                category_orders={"result":["win","draw","loss"]},
+                points="outliers",
+            )
+            fig_box.update_layout(showlegend=False, yaxis_range=[0,100])
+            st.plotly_chart(fig_box, use_container_width=True)
+
+        # ── Row 2: me vs opponent + ACPL by result ────────────────────────
+        c3, c4 = st.columns(2)
+
+        with c3:
+            st.subheader("My Accuracy vs Opponent")
+            st.caption("Each point is one game — dots above the diagonal mean you outplayed your opponent.")
+            fig_scatter = px.scatter(
+                adf, x="accuracy_opp", y="accuracy_me",
+                color="result",
+                color_discrete_map={"win":"#2ecc71","loss":"#e74c3c","draw":"#3498db"},
+                labels={"accuracy_opp":"Opponent Accuracy (%)","accuracy_me":"My Accuracy (%)","result":"Result"},
+                opacity=0.7,
+            )
+            # Diagonal reference line
+            fig_scatter.add_shape(type="line", x0=0, y0=0, x1=100, y1=100,
+                                  line=dict(dash="dash", color="grey", width=1))
+            fig_scatter.update_layout(xaxis_range=[0,100], yaxis_range=[0,100])
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+        with c4:
+            st.subheader("Blunders / Mistakes / Inaccuracies")
+            err_data = pd.DataFrame({
+                "Category": ["Blunders","Mistakes","Inaccuracies"],
+                "Per Game":  [
+                    adf["blunders_me"].mean(),
+                    adf["mistakes_me"].mean(),
+                    adf["inaccuracies_me"].mean(),
+                ],
+            })
+            fig_err = px.bar(
+                err_data, x="Category", y="Per Game", text_auto=".2f",
+                color="Category",
+                color_discrete_sequence=["#e74c3c","#e67e22","#f1c40f"],
+                labels={"Per Game":"Avg per Game"},
+            )
+            fig_err.update_layout(showlegend=False)
+            st.plotly_chart(fig_err, use_container_width=True)
+
+        # ── Row 3: accuracy vs opp rating + accuracy over time ────────────
+        c5, c6 = st.columns(2)
+
+        with c5:
+            st.subheader("Accuracy vs Opponent Rating")
+            st.caption("Are you more/less accurate against stronger players?")
+            sub = adf.dropna(subset=["opp_rating"]).copy()
+            sub["opp_bucket"] = (sub["opp_rating"] // 100 * 100).astype(int)
+            bkt_acc = (sub.groupby("opp_bucket")
+                       .agg(games=("accuracy_me","count"), avg_acc=("accuracy_me","mean"))
+                       .reset_index())
+            bkt_acc["label"] = bkt_acc["opp_bucket"].astype(str) + "–" + (bkt_acc["opp_bucket"]+99).astype(str)
+            fig_opp_acc = px.bar(
+                bkt_acc, x="label", y="avg_acc", text_auto=".1f",
+                color="avg_acc", color_continuous_scale="RdYlGn", range_color=[50, 90],
+                labels={"label":"Opponent Rating","avg_acc":"Avg Accuracy (%)"},
+            )
+            fig_opp_acc.update_layout(coloraxis_showscale=False, yaxis_range=[0,100])
+            st.plotly_chart(fig_opp_acc, use_container_width=True)
+
+        with c6:
+            st.subheader("Accuracy Over Time")
+            st.caption("10-game rolling average of your accuracy — shows improvement trends.")
+            acc_time = adf.sort_values("date").copy()
+            acc_time["roll10"] = acc_time["accuracy_me"].rolling(10, min_periods=3).mean()
+            fig_at = go.Figure()
+            fig_at.add_trace(go.Scatter(
+                x=acc_time["date"], y=acc_time["accuracy_me"],
+                mode="markers", marker=dict(size=4, color="#636efa", opacity=0.3),
+                name="Per game",
+            ))
+            fig_at.add_trace(go.Scatter(
+                x=acc_time["date"], y=acc_time["roll10"],
+                mode="lines", line=dict(color="#ef553b", width=2.5),
+                name="10-game avg",
+            ))
+            fig_at.update_layout(
+                height=360, yaxis_range=[0, 100],
+                xaxis_title="Date", yaxis_title="Accuracy (%)",
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_at, use_container_width=True)
+
+        # ── Full game table ───────────────────────────────────────────────
+        st.subheader("Analyzed Games")
+        tbl = (adf[["date","color","opponent","opp_rating","my_rating","result",
+                     "time_class","accuracy_me","accuracy_opp","acpl_me",
+                     "blunders_me","mistakes_me","inaccuracies_me","opening"]]
+               .sort_values("date", ascending=False)
+               .rename(columns={
+                   "accuracy_me":"Acc Me","accuracy_opp":"Acc Opp",
+                   "acpl_me":"ACPL","blunders_me":"Blunders",
+                   "mistakes_me":"Mistakes","inaccuracies_me":"Inaccuracies",
+               }))
+        pct2 = st.column_config.NumberColumn(format="%.1f")
+        st.dataframe(
+            tbl,
+            column_config={"Acc Me": pct2, "Acc Opp": pct2, "ACPL": pct2},
+            use_container_width=True, hide_index=True,
+        )
