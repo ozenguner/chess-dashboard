@@ -1,0 +1,4 @@
+streamlit==1.57.0
+plotly==6.7.0
+pandas==3.0.2
+chess==1.11.2
