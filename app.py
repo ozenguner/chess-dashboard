@@ -90,6 +90,13 @@ def load_data() -> pd.DataFrame:
     df["eco_family"]     = df["eco"].str[0].map(ECO_LABELS).fillna("Unknown")
     df["month"]          = df["date"].dt.to_period("M").dt.to_timestamp()
 
+    # Accuracy columns are added by analyze_games.py; ensure they exist even if
+    # that script hasn't been run yet so the Accuracy tab doesn't crash.
+    for col in ["accuracy_me","accuracy_opp","acpl_me","acpl_opp",
+                "blunders_me","mistakes_me","inaccuracies_me"]:
+        if col not in df.columns:
+            df[col] = pd.NA
+
     return df[df["result"].isin(["win","loss","draw"])].copy()
 
 
@@ -206,6 +213,10 @@ with st.sidebar:
     sel_classes = st.multiselect("Time class", all_classes, default=all_classes)
     d_min, d_max = df["date"].min().date(), df["date"].max().date()
     date_range = st.date_input("Date range", value=(d_min, d_max))
+    st.divider()
+    if st.button("↺ Refresh data", help="Clears the cache and reloads from chess.db — use after running analyze_games.py"):
+        st.cache_data.clear()
+        st.rerun()
 
 mask = df["time_class"].isin(sel_classes)
 if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
